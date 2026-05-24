@@ -1,0 +1,478 @@
+To install HashiCorp Terraform on Ubuntu:
+
+Step 1 — Update packages
+sudo apt update && sudo apt install -y gnupg software-properties-common curl
+Step 2 — Add HashiCorp GPG key
+curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+Step 3 — Add HashiCorp repository
+sudo apt-add-repository "deb https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+Step 4 — Update again
+sudo apt update
+Step 5 — Install Terraform
+sudo apt install terraform -y
+Step 6 — Verify installation
+terraform -version
+
+You should see something like:
+
+Terraform v1.x.x
+Test Terraform
+
+Create a file:
+
+nano main.tf
+
+Paste:
+
+provider "aws" {
+  region = "ca-central-1"
+}
+
+Save:
+
+Ctrl + O
+Enter
+Ctrl + X
+
+Then run:
+
+terraform init
+Important Terraform commands
+terraform init
+terraform plan
+terraform apply
+> Step 7 — Verify AWS Access
+
+Run:
+
+aws sts get-caller-identity
+
+This checks:
+
+AWS CLI works
+credentials work
+your IAM identity
+
+You should see:
+
+Account ID
+User ARN
+Step 8 — Start the Security Investigation
+
+Now the real challenge starts.
+
+Usually these IAM privilege escalation labs involve:
+
+weak IAM permissions
+attaching policies
+assuming roles
+creating access keys
+abusing PassRole
+escalating to AdministratorAccess
+Step 9 — Inspect Current Permissions
+***********************************************************
+
+What This Lab Is Testing
+
+You start as:
+
+dev_user
+
+This user is weak/limited.
+
+BUT it can:
+
+stop EC2
+modify EC2 user data
+restart EC2
+
+The EC2 instance already has:
+
+AdministratorAccess IAM Role
+
+attached to it.
+
+So the attack is:
+
+inject malicious startup script
+reboot EC2
+steal admin credentials
+use stolen credentials
+access protected flag bucket
+
+This is a real-world cloud privilege escalation scenario.
+
+Your Practical Workflow
+STEP 1 — Deploy Lab
+
+Inside VS Code terminal:
+
+terraform init
+terraform apply
+
+Type:
+
+yes
+
+Wait until complete.
+
+STEP 2 — Get Credentials
+
+Run:
+
+terraform output -json
+
+AND:
+
+terraform output -raw start_txt
+
+This gives:
+
+dev_user access key
+secret key
+region
+bucket names
+target instance info
+STEP 3 — Configure dev_user Profile
+
+Run:
+
+aws configure --profile dev_user
+
+Paste:
+
+Access key
+Secret key
+Region
+
+Then verify:
+
+aws sts get-caller-identity --profile dev_user
+
+You should now see:
+
+user/dev_user
+STEP 4 — Enumerate EC2
+
+List instances:
+
+aws ec2 describe-instances --profile dev_user
+
+You’ll identify:
+
+target EC2
+instance ID
+STEP 5 — Stop the EC2
+
+Example:
+
+aws ec2 stop-instances --instance-ids i-xxxxxxxx --profile dev_user
+
+Wait until stopped.
+
+STEP 6 — Modify User Data
+
+This is the core attack.
+
+You inject a startup script.
+
+The script:
+
+queries EC2 metadata service
+gets temporary IAM credentials
+uploads them to exfil S3 bucket
+
+Typical metadata path:
+
+http://169.254.169.254/latest/meta-data/iam/security-credentials/
+STEP 7 — Restart Instance
+aws ec2 start-instances --instance-ids i-xxxxxxxx --profile dev_user
+
+Now your malicious user-data runs automatically during boot.
+
+STEP 8 — Read Exfil Bucket
+
+List bucket contents:
+
+aws s3 ls s3://BUCKETNAME --profile dev_user
+
+Then copy credential file:
+
+aws s3 cp s3://BUCKETNAME/creds.txt .
+STEP 9 — Use Stolen Admin Credentials
+
+Export them:
+
+export AWS_ACCESS_KEY_ID=XXXX
+export AWS_SECRET_ACCESS_KEY=XXXX
+export AWS_SESSION_TOKEN=XXXX
+
+Verify:
+
+aws sts get-caller-identity
+
+You should now see:
+
+admin role
+STEP 10 — Get the Flag
+
+Now access protected flag bucket:
+
+aws s3 ls
+
+Then:
+
+aws s3 cp s3://FLAGBUCKET/flag.txt .
+
+Open:
+
+cat flag.txt
+
+DONE 🎯
+****************************************************************************************
+Breaking Down the Architecture
+1. dev_user
+
+This is your starting AWS user.
+
+It has:
+
+limited permissions
+cannot directly access flag bucket
+cannot directly become admin
+
+BUT it CAN:
+
+stop/start EC2
+edit EC2 startup script (user-data)
+
+That’s the weakness.
+
+2. Target EC2
+
+This EC2 server has:
+
+AdministratorAccess
+
+attached to it.
+
+Meaning:
+
+the EC2 itself is basically admin inside AWS.
+3. User Data
+
+When an EC2 starts, AWS can run a startup script automatically.
+
+Example:
+
+#!/bin/bash
+echo "Hello"
+
+This is called:
+👉 EC2 User Data
+
+The lab vulnerability is:
+
+dev_user is allowed to modify this startup script
+
+That is dangerous.
+
+4. What You Will Do
+
+You will change the startup script so that when the EC2 boots:
+
+instead of:
+
+start normal application
+
+it secretly does:
+
+grab admin credentials
+send them to S3 bucket
+5. Why Credentials Exist on EC2
+
+The EC2 has an IAM role attached.
+
+AWS automatically gives temporary credentials to EC2 instances.
+
+The credentials are hidden inside the EC2 metadata service.
+
+Inside the EC2 there is a special internal URL:
+
+169.254.169.254
+
+This contains:
+
+access key
+secret key
+session token
+
+for the EC2 IAM role.
+
+Since the EC2 role is admin:
+👉 stealing those credentials = becoming admin.
+
+6. What Is “Exfil Bucket”
+
+“Exfiltration” means:
+👉 secretly sending stolen data somewhere.
+
+The lab gives you:
+
+a writable S3 bucket
+
+Your malicious script will:
+
+steal credentials
+upload them to this bucket
+
+Then YOU download them.
+
+7. Final Goal
+
+Once you have admin credentials:
+
+you access the protected flag bucket
+retrieve flag.txt
+
+That proves you successfully escalated privileges.
+********************************************************************888
+dev_user
+   ↓
+Can edit EC2 startup script
+   ↓
+EC2 boots with malicious script
+   ↓
+Script steals admin credentials
+   ↓
+Credentials uploaded to S3
+   ↓
+You download credentials
+   ↓
+You become admin
+   ↓
+You access flag Bucket333
+*****************************************************************************************
+Think of It Like Different Accounts
+1. myadmin → Your real AWS admin user
+
+This is the account you created/configured.
+
+You are currently logged in as this.
+
+It can:
+
+deploy Terraform
+create AWS resources
+manage lab infrastructure
+
+You use this to SET UP the lab.
+
+2. dev_user → Weak attacker account (lab user)
+
+Terraform will create this user.
+
+This is the “attacker starting point”.
+
+It has:
+
+limited permissions
+NOT admin
+only certain EC2 permissions
+
+The challenge starts from THIS user.
+
+Later you will switch AWS CLI to this profile.
+
+3. EC2 Admin Role → The “prize”
+
+The target EC2 instance has an IAM role attached with:
+
+AdministratorAccess
+
+This role belongs to the EC2 machine itself.
+
+NOT to you.
+
+The EC2 internally receives temporary AWS credentials automatically.
+
+Your attack goal:
+👉 steal THIS role’s credentials.
+
+Simple Identity Flow
+
+Right now:
+
+YOU = myadmin
+
+After Terraform:
+
+YOU CAN SWITCH TO = dev_user
+
+After privilege escalation:
+
+YOU STEAL = EC2 admin role credentials
+Visual Understanding
+myadmin
+   ↓
+deploys lab
+
+dev_user
+   ↓
+weak attacker account
+
+Target EC2
+   ↓
+has AdministratorAccess role
+
+You exploit EC2
+   ↓
+steal admin role credentials
+   ↓
+become admin
+Important Concept
+
+An IAM User and IAM Role are DIFFERENT.
+
+IAM User
+
+Permanent identity.
+
+Example:
+
+myadmin
+dev_user
+
+Uses:
+
+username
+access keys
+password
+IAM Role
+
+Temporary identity.
+
+Example:
+
+EC2 Admin Role
+
+Usually attached to:
+
+EC2
+Lambda
+ECS
+services
+
+AWS automatically gives temporary credentials to the machine/service.
+
+In This Lab
+
+The dangerous mistake is:
+
+dev_user can control EC2
+
+AND
+
+EC2 has AdministratorAccess role
+
+That combination allows privilege escalation.

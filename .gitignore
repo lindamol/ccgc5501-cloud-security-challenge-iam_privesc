@@ -1,0 +1,6 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+creds.json
+flag.txt
+*.log
