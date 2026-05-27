@@ -12,7 +12,6 @@ The important misconfiguration was that `dev_user` had permissions to stop, modi
 I deployed the lab environment using Terraform:
 
 Command executed:
------------------
 terraform init
 terraform plan
 terraform apply
